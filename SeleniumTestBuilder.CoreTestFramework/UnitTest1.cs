@@ -1,3 +1,5 @@
+using Newtonsoft.Json;
+
 namespace SeleniumTestBuilder.CoreTestFramework
 {
     public class Tests

@@ -14,6 +14,7 @@ using System.Text.RegularExpressions;
 using ICSharpCode.Decompiler.Disassembler;
 using ICSharpCode.Decompiler.Metadata;
 using System.Runtime.Serialization.Formatters.Binary;
+using System.Web;
 
 namespace SeleniumTestBuilder
 {
@@ -24,7 +25,19 @@ namespace SeleniumTestBuilder
 
     public sealed class ProxyRequestHandler : IProxyRequestHandler
     {
+        private readonly Dictionary<string, string> _requestBodies;
         private ProxyServer _server;
+
+        private string CleanupText(string text, bool removeSpecial = true)
+        {
+            var decodedText = HttpUtility.UrlDecode(text);
+            var strippedText = decodedText
+                .Replace("-", "_")
+                .Replace("[", "_")
+                .Replace("]", "_");
+            var cleanText = removeSpecial ? strippedText : decodedText;
+            return cleanText;
+        }
 
         private IList<CSPropertyDefinition> ParseArray(in IList<CSPropertyDefinition> classesDict, in string currentClass, JProperty? child)
         {
@@ -188,6 +201,7 @@ namespace SeleniumTestBuilder
 
         private Task ProxyServerBeforeResponse(object sender, SessionEventArgs e)
         {
+            var clientConnectionId = e.ClientConnectionId.ToString();
             var whiteList = File.ReadAllLines("whitelist.txt");
 
             if (whiteList.Contains(e.HttpClient.Request.Url) == false
@@ -197,6 +211,9 @@ namespace SeleniumTestBuilder
             if (whiteList.Contains(e.HttpClient.Request.Url)
                 && e.HttpClient.Response.StatusCode != 200)
                 return Task.CompletedTask;
+
+            if (this._requestBodies.ContainsKey(clientConnectionId) == false)
+                this._requestBodies.Add(clientConnectionId, string.Empty);
 
             switch (e.HttpClient.Request.Method)
             {
@@ -210,9 +227,10 @@ namespace SeleniumTestBuilder
                     var baseClassName = string.Join("_", e.HttpClient.Request.Url.Split("/").Skip(3));
 
                     var stringPayload = string.Empty;
+                    var data = e.HttpClient.UserData as dynamic;
 
-                    try { stringPayload = e.GetRequestBodyAsString().GetAwaiter().GetResult() ?? string.Empty; }
-                    catch (Exception) { }
+                    try { stringPayload = data.RequestBody ?? string.Empty; }
+                    catch (Exception ex) { }
 
 
                     var export = ParsePost(new Uri(e.HttpClient.Request.Url), baseClassName, stringPayload);
@@ -223,7 +241,31 @@ namespace SeleniumTestBuilder
 
         private Task ProxyServerBeforeRequest(object sender, SessionEventArgs e)
         {
-            
+            try
+            {
+                e.HttpClient.UserData = new
+                {
+                    SessionId = Guid.NewGuid(),
+                    RequestBody = e.GetRequestBodyAsString().GetAwaiter().GetResult()
+                };
+            }
+            catch (Exception)
+            {
+                e.HttpClient.UserData = new
+                {
+                    SessionId = Guid.NewGuid(),
+                    RequestBody = string.Empty
+                };
+            }
+
+            //try
+            //{
+            //    this._requestBodies.Add(e.ClientConnectionId.ToString(), e.GetRequestBodyAsString().GetAwaiter().GetResult());
+            //}
+            //catch(Exception ex)
+            //{
+            //    this._requestBodies.Add(e.HttpClient.UserData.ToString(), string.Empty);
+            //}
             return Task.CompletedTask;
         }
 
@@ -277,8 +319,8 @@ namespace SeleniumTestBuilder
                 ParseQueryParameters(in classesDict, originalClassName, stringPayload);
             }
 
-            var classNames = classesDict.Select(c => c.PropertyClass.Name).Distinct().ToArray();
-            var classPropertiesGrouped = classesDict.GroupBy(c => c.PropertyClass.Name);
+            var classNames = classesDict.Select(c => CleanupText(c.PropertyClass.Name)).Distinct().ToArray();
+            var classPropertiesGrouped = classesDict.GroupBy(c => CleanupText(c.PropertyClass.Name));
 
             var generatedPropertiesCode = string.Join("\n", classNames.Select(x =>
             {
@@ -286,14 +328,14 @@ namespace SeleniumTestBuilder
                 .SelectMany(c => c.Where(y => y.PropertyClass.Name == x));
 
                 var associatedPropertiesCode = associatedProperties
-                .Select(p => $"public {p.PropertyType} {p.Name} {{ get; set; }}");
+                .Select(p => $"[JsonProperty(\"{CleanupText(p.Name, false)}\")]\npublic {p.PropertyType} {CleanupText(p.Name)} {{ get; set; }}");
 
                 var associatedPropertiesInitializers = associatedProperties
-                .Select(a => $"\nthis.{a.Name} = {ParseDefaultValue(a)};"); ;
+                .Select(a => $"\nthis.{CleanupText(a.Name)} = {ParseDefaultValue(a)};"); ;
 
-                var constructor = $"public {x}(){{\n{string.Join("\n", associatedPropertiesInitializers)}\n}}";
+                var constructor = $"public {CleanupText(x)}(){{\n{string.Join("\n", associatedPropertiesInitializers)}\n}}";
 
-                return $"public class {x} {{\n{string.Join("\n", associatedPropertiesCode)}\n\n{constructor}\n}}\n";
+                return $"public class {CleanupText(x)} {{\n{string.Join("\n", associatedPropertiesCode)}\n\n{constructor}\n}}\n";
             }));
 
             var propertiesExport = classesDict
@@ -301,7 +343,7 @@ namespace SeleniumTestBuilder
                 .AsReadOnly();
 
             var initiatorCode = $"var @{originalClassName}=new {originalClassName}();";
-            var createRequestCode = $"var resp = this._wrapper.Post<dynamic>(\"{url.AbsoluteUri}\", @{originalClassName}, {isQueryParameters.ToString().ToLower()}).GetAwaiter().GetResult();";
+            var createRequestCode = $"var resp = this._wrapper.Post(\"{url.AbsoluteUri}\", @{originalClassName}, {isQueryParameters.ToString().ToLower()}).GetAwaiter().GetResult();\nAssert.That(resp.StatusCode == System.Net.HttpStatusCode.OK);";
             var unitTestCode = File.ReadAllText("UnitTest1.cs")
                 .Replace("// Classes", generatedPropertiesCode)
                 .Replace("// Instantiate", initiatorCode)
@@ -337,6 +379,7 @@ namespace SeleniumTestBuilder
 
         public ProxyRequestHandler()
         {
+            this._requestBodies = new Dictionary<string, string>();
             this._server = new ProxyServer();
 
             var eep = new ExplicitProxyEndPoint(IPAddress.Any, 18884);

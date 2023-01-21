@@ -48,7 +48,7 @@ namespace SelniumTestBuilder.TestConsole
                 //    }
                 //};
 
-                //var builder = handler.ParsePost(new Uri("https://parabank.parasoft.com/parabank/login.htm;"), "Test", JsonConvert.SerializeObject(payload));
+                //var builder = handler.ParsePost(new Uri("https://courses.ultimateqa.com/users/sign_in;"), "Test", JsonConvert.SerializeObject(payload));
 
                 while (Console.ReadKey().Key != ConsoleKey.Escape)
                 {

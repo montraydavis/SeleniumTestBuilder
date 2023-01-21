@@ -7,7 +7,7 @@ namespace SeleniumTestBuilder.HttpClientWrapper
     {
         public async Task<T> Get<T>(string endpoint)
         {
-            var resp = await this.RawRequest<T>(HttpMethod.Get, endpoint, null, false);
+            var resp = await this.RawRequest<T>(HttpMethod.Get, endpoint, string.Empty, false);
 
             return resp;
         }
@@ -22,6 +22,11 @@ namespace SeleniumTestBuilder.HttpClientWrapper
             return await this.RawRequest(HttpMethod.Patch, endpoint, content, isQueryParameters);
         }
 
+        public async Task<HttpResponseMessage> Put(string endpoint, object content, bool isQueryParameters)
+        {
+            return await this.RawRequest(HttpMethod.Put, endpoint, content, isQueryParameters);
+        }
+
         public async Task<HttpResponseMessage> Delete(string endpoint, object content, bool isQueryParameters)
         {
             return await this.RawRequest(HttpMethod.Delete, endpoint, content, isQueryParameters);
@@ -29,7 +34,7 @@ namespace SeleniumTestBuilder.HttpClientWrapper
 
         public async Task<HttpResponseMessage> Get(string endpoint)
         {
-            return await this.RawRequest(HttpMethod.Get, endpoint, null, false);
+            return await this.RawRequest(HttpMethod.Get, endpoint, string.Empty, false);
         }
 
         public async Task<T> Post<T>(string endpoint, object content, bool isQueryParameters)
@@ -46,9 +51,16 @@ namespace SeleniumTestBuilder.HttpClientWrapper
             return resp;
         }
 
-        public async Task<T> Delete<T>(string endpoint, object content, bool isQueryParameters)
+        public async Task<T> Put<T>(string endpoint, object content, bool isQueryParameters)
         {
             var resp = await this.RawRequest<T>(HttpMethod.Post, endpoint, content, isQueryParameters);
+
+            return resp;
+        }
+
+        public async Task<T> Delete<T>(string endpoint, object content, bool isQueryParameters)
+        {
+            var resp = await this.RawRequest<T>(HttpMethod.Put, endpoint, content, isQueryParameters);
 
             return resp;
         }
@@ -69,9 +81,9 @@ namespace SeleniumTestBuilder.HttpClientWrapper
             var httpClient = new HttpClient();
             var contentDict = isQueryParameters ? JsonConvert.DeserializeObject<Dictionary<string, string>>(JsonConvert.SerializeObject(content)) : null;
             var contentDictList = isQueryParameters ? contentDict?.ToList() : null;
-           var requestContent = isQueryParameters && contentDictList != null ? new FormUrlEncodedContent(contentDictList) as HttpContent : new StringContent(JsonConvert.SerializeObject(content)) as HttpContent;
+            var requestContent = isQueryParameters && contentDictList != null ? new FormUrlEncodedContent(contentDictList) as HttpContent : new StringContent(JsonConvert.SerializeObject(content)) as HttpContent;
 
-            HttpRequestMessage request = new HttpRequestMessage
+            var request = new HttpRequestMessage()
             {
                 Content = method == HttpMethod.Get ? null : requestContent,
                 Method = method,

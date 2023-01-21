@@ -1,8 +1,5 @@
-﻿using Newtonsoft.Json;
-using OpenQA.Selenium;
-using OpenQA.Selenium.Chrome;
+﻿using OpenQA.Selenium.Chrome;
 using SeleniumTestBuilder;
-using SeleniumTestBuilder.Models;
 
 namespace SelniumTestBuilder.TestConsole
 {
@@ -10,20 +7,10 @@ namespace SelniumTestBuilder.TestConsole
     {
         public static void Main(string[] args)
         {
-            var proxy = new Proxy()
-            {
-                HttpProxy = "http://localhost:18884",
-                SslProxy = "http://localhost:18884",
-                FtpProxy = "http://localhost:18884"
-            };
-            var chromeOptions = new ChromeOptions()
-            {
-                Proxy = proxy
-            };
+            var bootstrap = new Bootstrap();
+            var selenium = bootstrap.Resolve<ChromeDriver>();
 
-            var selenium = new ChromeDriver(chromeOptions);
-
-            using (var handler = new ProxyRequestHandler())
+            using (var handler = bootstrap.Resolve<IProxyRequestHandler>())
             {
                 //var payload = new
                 //{
@@ -48,7 +35,7 @@ namespace SelniumTestBuilder.TestConsole
                 //    }
                 //};
 
-                //var builder = handler.ParsePost(new Uri("https://courses.ultimateqa.com/users/sign_in;"), "Test", JsonConvert.SerializeObject(payload));
+                //var builder = handler.Capture(new Uri("https://courses.ultimateqa.com/users/sign_in;"), "Test", JsonConvert.SerializeObject(payload));
 
                 while (Console.ReadKey().Key != ConsoleKey.Escape)
                 {

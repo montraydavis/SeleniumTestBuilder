@@ -7,28 +7,29 @@ using System.Reflection.Metadata;
 using Titanium.Web.Proxy;
 using Titanium.Web.Proxy.EventArguments;
 using Titanium.Web.Proxy.Models;
-using ICSharpCode.Decompiler;
 using System.Reflection;
 
 using System.Text.RegularExpressions;
-using ICSharpCode.Decompiler.Disassembler;
-using ICSharpCode.Decompiler.Metadata;
 using System.Runtime.Serialization.Formatters.Binary;
 using System.Web;
+using System.Globalization;
+using System.Text;
+using System;
 
 namespace SeleniumTestBuilder
 {
     public interface IProxyRequestHandler : IDisposable
     {
-        CSExport ParsePost(Uri url, string baseClassName, string stringPayload);
+        CSExport Capture(Uri url, string baseClassName, string stringPayload, HttpMethod method);
     }
 
     public sealed class ProxyRequestHandler : IProxyRequestHandler
     {
         private readonly Dictionary<string, string> _requestBodies;
-        private ProxyServer _server;
+        private readonly ProxyServer _server;
 
-        private string CleanupText(string text, bool removeSpecial = true)
+        #region Text Utility Functions
+        private static string CleanupText(string text, bool removeSpecial = true)
         {
             var decodedText = HttpUtility.UrlDecode(text);
             var strippedText = decodedText
@@ -38,7 +39,9 @@ namespace SeleniumTestBuilder
             var cleanText = removeSpecial ? strippedText : decodedText;
             return cleanText;
         }
+        #endregion
 
+        #region Parsing
         private IList<CSPropertyDefinition> ParseArray(in IList<CSPropertyDefinition> classesDict, in string currentClass, JProperty? child)
         {
             var value = child?.Value;
@@ -87,14 +90,11 @@ namespace SeleniumTestBuilder
                     case "undefined[]":
                         classesDict.Add(new CSPropertyDefinition(new CSClassDefinition(currentClass), child.Name, "object[]", string.Join(",", items.Select(x =>
                         {
-                            switch (x.Type)
+                            return x.Type switch
                             {
-                                default:
-                                case JTokenType.String:
-                                    return $"\"{x}\"";
-                                case JTokenType.Integer:
-                                    return $"{x}";
-                            }
+                                JTokenType.Integer => $"{x}",
+                                _ => $"\"{x}\"",
+                            };
                         })), true));
                         break;
                 }
@@ -102,7 +102,11 @@ namespace SeleniumTestBuilder
             else
             {
                 ParseObject(in classesDict, in newClass, items);
-                classesDict.Add(new CSPropertyDefinition(new CSClassDefinition(currentClass), child.Name, itemType, null, true));
+
+                if (child != null)
+                    classesDict.Add(new CSPropertyDefinition(new CSClassDefinition(currentClass), child.Name, itemType, null, true));
+                else
+                    throw new Exception("Child has no value");
             }
 
             return classesDict;
@@ -169,14 +173,14 @@ namespace SeleniumTestBuilder
             return classesDict;
         }
 
-        private string ParseDefaultValue(CSPropertyDefinition a)
+        private static string ParseDefaultValue(CSPropertyDefinition a)
         {
             switch (a.PropertyType)
             {
                 case "string":
                     return $"\"{a.DefaultValue}\"";
                 case "double":
-                    return a.DefaultValue;
+                    return $"{(a.DefaultValue ?? "0")}";
                 case "double[]":
                 case "string[]":
                     if (a.DefaultValue != null)
@@ -199,13 +203,33 @@ namespace SeleniumTestBuilder
 
         }
 
+        private static void ParseQueryParameters(in IList<CSPropertyDefinition> classesDict, string currentClass, string stringPayload)
+        {
+            var queryParameters = stringPayload
+                .Split("&");
+
+            var queryParameterProperties = queryParameters.Select(q =>
+            {
+                var qp = q
+                    .Split("=")
+                    .ToArray();
+                var classDefinition = new CSClassDefinition(currentClass);
+                return new CSPropertyDefinition(classDefinition, qp[0], "string", qp[1], false);
+
+            });
+
+            foreach (var qpp in queryParameterProperties)
+                classesDict.Add(qpp);
+        }
+        #endregion
+
+        #region Proxy Handling
         private Task ProxyServerBeforeResponse(object sender, SessionEventArgs e)
         {
             var clientConnectionId = e.ClientConnectionId.ToString();
             var whiteList = File.ReadAllLines("whitelist.txt");
 
-            if (whiteList.Contains(e.HttpClient.Request.Url) == false
-                || e.HttpClient.Request.Url.StartsWith("https://accounts.google.com/ListAccounts"))
+            if (whiteList.Contains(e.HttpClient.Request.Url) == false)
                 return Task.CompletedTask;
 
             if (whiteList.Contains(e.HttpClient.Request.Url)
@@ -215,37 +239,39 @@ namespace SeleniumTestBuilder
             if (this._requestBodies.ContainsKey(clientConnectionId) == false)
                 this._requestBodies.Add(clientConnectionId, string.Empty);
 
-            switch (e.HttpClient.Request.Method)
+            var baseClassName = string.Join("_", e.HttpClient.Request.Url.Split("/").Skip(3));
+            var stringPayload = string.Empty;
+            var data = e.HttpClient.UserData as dynamic;
+
+            try
             {
-                default:
-                case "GET":
-
-                    break;
-
-                case "POST":
-
-                    var baseClassName = string.Join("_", e.HttpClient.Request.Url.Split("/").Skip(3));
-
-                    var stringPayload = string.Empty;
-                    var data = e.HttpClient.UserData as dynamic;
-
-                    try { stringPayload = data.RequestBody ?? string.Empty; }
-                    catch (Exception ex) { }
-
-
-                    var export = ParsePost(new Uri(e.HttpClient.Request.Url), baseClassName, stringPayload);
-                    break;
+                if (data != null)
+                {
+                    stringPayload = data.RequestBody ?? string.Empty;
+                }
             }
+            catch (Exception) { }
+
+            _ = e.HttpClient.Request.Method.ToUpper() switch
+            {
+                "POST" => Capture(new Uri(e.HttpClient.Request.Url), baseClassName, stringPayload, HttpMethod.Post),
+                "PATCH" => Capture(new Uri(e.HttpClient.Request.Url), baseClassName, stringPayload, HttpMethod.Patch),
+                "PUT" => Capture(new Uri(e.HttpClient.Request.Url), baseClassName, stringPayload, HttpMethod.Put),
+                "DELETE" => Capture(new Uri(e.HttpClient.Request.Url), baseClassName, stringPayload, HttpMethod.Delete),
+                _ => Capture(new Uri(e.HttpClient.Request.Url), baseClassName, string.Empty, HttpMethod.Get),
+            };
             return Task.CompletedTask;
         }
 
         private Task ProxyServerBeforeRequest(object sender, SessionEventArgs e)
         {
+            var sessionId = Guid.NewGuid().ToString();
+
             try
             {
                 e.HttpClient.UserData = new
                 {
-                    SessionId = Guid.NewGuid(),
+                    SessionId = sessionId,
                     RequestBody = e.GetRequestBodyAsString().GetAwaiter().GetResult()
                 };
             }
@@ -253,21 +279,14 @@ namespace SeleniumTestBuilder
             {
                 e.HttpClient.UserData = new
                 {
-                    SessionId = Guid.NewGuid(),
+                    SessionId = sessionId,
                     RequestBody = string.Empty
                 };
             }
 
-            //try
-            //{
-            //    this._requestBodies.Add(e.ClientConnectionId.ToString(), e.GetRequestBodyAsString().GetAwaiter().GetResult());
-            //}
-            //catch(Exception ex)
-            //{
-            //    this._requestBodies.Add(e.HttpClient.UserData.ToString(), string.Empty);
-            //}
             return Task.CompletedTask;
         }
+        #endregion
 
         public void Dispose()
         {
@@ -281,7 +300,7 @@ namespace SeleniumTestBuilder
             }
         }
 
-        public CSExport ParsePost(Uri url, string baseClassName, string stringPayload)
+        public CSExport Capture(Uri url, string baseClassName, string stringPayload, HttpMethod method)
         {
             var isQueryParameters = false;
             var originalClassName = baseClassName;
@@ -289,7 +308,10 @@ namespace SeleniumTestBuilder
 
             if (string.IsNullOrWhiteSpace(stringPayload))
             {
+                var qp = url.AbsolutePath.Split("?");
 
+                if (qp.Length > 1)
+                    ParseQueryParameters(in classesDict, originalClassName, qp[1]);
             }
             else if (int.TryParse(stringPayload, out _) || bool.TryParse(stringPayload, out _))
             {
@@ -324,6 +346,7 @@ namespace SeleniumTestBuilder
 
             var generatedPropertiesCode = string.Join("\n", classNames.Select(x =>
             {
+
                 var associatedProperties = classPropertiesGrouped
                 .SelectMany(c => c.Where(y => y.PropertyClass.Name == x));
 
@@ -342,39 +365,33 @@ namespace SeleniumTestBuilder
                 .ToList()
                 .AsReadOnly();
 
+            var createRequestCodeStringBuilder = new StringBuilder();
+            var clientWrapperMethod = new CultureInfo("en-US", false).TextInfo.ToTitleCase(method.ToString().ToLower());
+
+            createRequestCodeStringBuilder.Append($"var resp = this._wrapper.{clientWrapperMethod}");
+
+            if (method == HttpMethod.Get)
+                createRequestCodeStringBuilder.Append($"(\"{url.AbsoluteUri}\")");
+            else
+                createRequestCodeStringBuilder.Append($"(\"{url.AbsoluteUri}\", @{originalClassName}, {isQueryParameters.ToString().ToLower()})");
+
+            createRequestCodeStringBuilder.Append(".GetAwaiter().GetResult();");
+            createRequestCodeStringBuilder.Append("\nAssert.That(resp.StatusCode==HttpStatusCode.OK);");
+
+
             var initiatorCode = $"var @{originalClassName}=new {originalClassName}();";
-            var createRequestCode = $"var resp = this._wrapper.Post(\"{url.AbsoluteUri}\", @{originalClassName}, {isQueryParameters.ToString().ToLower()}).GetAwaiter().GetResult();\nAssert.That(resp.StatusCode == System.Net.HttpStatusCode.OK);";
             var unitTestCode = File.ReadAllText("UnitTest1.cs")
                 .Replace("// Classes", generatedPropertiesCode)
                 .Replace("// Instantiate", initiatorCode)
-                .Replace("// Make Request", createRequestCode);
+                .Replace("// Make Request", createRequestCodeStringBuilder.ToString());
 
             if (Directory.Exists("export") == false)
                 Directory.CreateDirectory("export");
 
-            var randomFileName = Guid.NewGuid().ToString().Substring(0, 5);
+            var randomFileName = string.Concat($"Test_{url.AbsolutePath.Split("/").Last()}_", Guid.NewGuid().ToString().AsSpan(0, 5));
             File.WriteAllText(randomFileName, unitTestCode);
 
             return new CSExport(propertiesExport, unitTestCode);
-        }
-
-        private void ParseQueryParameters(in IList<CSPropertyDefinition> classesDict, string currentClass, string stringPayload)
-        {
-            var queryParameters = stringPayload
-                .Split("&");
-
-            var queryParameterProperties = queryParameters.Select(q =>
-            {
-                var qp = q
-                    .Split("=")
-                    .ToArray();
-                var classDefinition = new CSClassDefinition(currentClass);
-                return new CSPropertyDefinition(classDefinition, qp[0], "string", qp[1], false);
-
-            });
-
-            foreach (var qpp in queryParameterProperties)
-                classesDict.Add(qpp);
         }
 
         public ProxyRequestHandler()

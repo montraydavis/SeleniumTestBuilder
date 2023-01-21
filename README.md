@@ -18,8 +18,14 @@ The server within this application records user actions, and convert them to C# 
 
 APIs - Fully supported [GET, POST, PATCH, DELETE]
 
-### Whitelisting Endpoints
-Line delimeted endpoints can be specified in "whitelist.txt" within the [SeleniumTestBuilder folder](SeleniumTestBuilder).
+### API Unit Test Generation
+This library captures XHR / API requests within chrome, and generates a C# Unit Test representation of that request including body payload construction and query parameter model construction. (ie: The body is automatically parsed and classes are created to represent the JSON object.) 
+
+> **Important!**:
+>
+> Only endpoints whitelisted will be captured.
+>
+> Line delimeted endpoints can be specified in "whitelist.txt" within the [SeleniumTestBuilder folder](SeleniumTestBuilder/whitelist.txt).
 
 Front End - Not yet supported.
 
